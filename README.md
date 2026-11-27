@@ -3,11 +3,13 @@
 Serve a folder from the iOS **Files** app through a local web server running in
 [iSH](https://ish.app), and browse it in Safari on the same device.
 
-- **Read-only.** Uses [darkhttpd](https://github.com/emikulic/darkhttpd), a single
-  small static-file server with directory listings.
+- **Read-only.** Uses Python's built-in
+  [`http.server`](https://docs.python.org/3/library/http.server.html), which
+  serves files and folder listings and refuses uploads.
 - **This device only.** Listens on `127.0.0.1`, so other devices on your Wi‑Fi
   can't reach it.
-- **One POSIX `sh` script** (`serve.sh`), no other dependencies.
+- **One POSIX `sh` script** (`serve.sh`). Its only dependency is `python3`,
+  which `setup` installs for you (about 50 MB).
 
 ## Quick start
 
@@ -18,7 +20,7 @@ apk add git
 git clone <this repo's URL> ~/iOS-websrv
 cd ~/iOS-websrv
 
-./serve.sh setup     # installs darkhttpd if needed, opens the iOS folder picker, asks your preferences
+./serve.sh setup     # installs python3 if needed, opens the iOS folder picker, asks your preferences
 ./serve.sh start
 ```
 
@@ -28,7 +30,7 @@ Then open <http://127.0.0.1:8080/> in Safari.
 
 | Command  | What it does |
 |----------|--------------|
-| `setup`  | Installs darkhttpd if missing, mounts the iOS folder you pick, asks about keepalive and logging, and saves your answers. Run it again to pick a different folder. |
+| `setup`  | Installs python3 if missing, mounts the iOS folder you pick, asks about keepalive and logging, and saves your answers. Run it again to pick a different folder. |
 | `start`  | Starts the server. If the folder isn't mounted (e.g. after iSH restarted), it opens the folder picker first. |
 | `stop`   | Stops the server and the keepalive. Leaves the folder mounted. |
 | `status` | Shows the server, mount, keepalive and autostart state. |
@@ -73,6 +75,13 @@ Examples:
   `KEY=value` lines. The script parses this file rather than running it, so
   only known keys are used. Pidfiles and the log are in
   `~/.local/state/ish-websrv/`.
+- **Why Python and not a smaller server.** iSH's `sendfile()` doesn't work for
+  network connections. darkhttpd, the server this project started with, sends
+  files only with `sendfile()`, so in iSH every file arrived empty. Python's
+  `http.server` uses ordinary reads and writes. Python's docs describe it as
+  not meant for production. That's acceptable here because it only listens on
+  `127.0.0.1` and only serves files, but don't change the bind address to make
+  it reachable from the network.
 - **Bind address.** `ADDR=127.0.0.1` is deliberate. Changing it in the config
   makes the server reachable by anyone on your network, and the script warns
   you if you do.
@@ -81,9 +90,12 @@ Examples:
 
 - **Safari hangs:** check `./serve.sh status`. If keepalive is stopped, location
   permission may have been denied (iOS Settings → iSH → Location).
-- **The server won't start:** run it in the foreground to see darkhttpd's own
-  error, e.g.
-  `darkhttpd /mnt/www --addr 127.0.0.1 --port 8080`.
+- **The server won't start:** `start` prints the command to run it in the
+  foreground, so you can see Python's own error, e.g.
+  `python3 -m http.server --bind 127.0.0.1 --directory /mnt/www 8080`.
+  "Address already in use" means another program has the port; use `--port`.
+- **Safari says "the network connection was lost":** check `./serve.sh --version`.
+  Versions before 0.2.0 used darkhttpd, which can't send files in iSH.
 - **Listing is empty:** run `ls /mnt/www`. If that's empty too, the mount
   didn't take. Re-run `./serve.sh setup` and choose "y" to pick the folder
   again.

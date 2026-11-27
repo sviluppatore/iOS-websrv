@@ -38,8 +38,9 @@ soon as the Shortcut switches to Safari, and the page never loads.
 1. Tap **+** to create a new shortcut and name it something easy to say, e.g.
    **Start Web Server**. That name is also the Siri phrase.
 2. Add the action **Open App** and choose **iSH**.
-3. Add **Wait** and set it to **5 seconds**. iSH is emulated and slow to start;
-   raise this if Safari opens before the server is ready.
+3. Add **Wait** and set it to **5 seconds**. iSH is emulated, and Python takes
+   a few seconds to start in it; raise this if Safari shows an error because
+   it opened before the server was ready.
 4. Add **Open URLs** with `http://127.0.0.1:8080/` (use your port if you
    changed it).
 

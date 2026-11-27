@@ -1,6 +1,6 @@
 #!/bin/sh
 # serve.sh - serve a folder from the iOS Files app inside iSH, read-only,
-# reachable only from this device (127.0.0.1), using darkhttpd.
+# reachable only from this device (127.0.0.1), using Python's http.server.
 #
 # Settings are resolved in this order (later wins):
 #   built-in defaults  ->  config file written by `setup`  ->  command-line flags
@@ -8,14 +8,16 @@ set -eu
 
 # Semantic version (MAJOR.MINOR.PATCH). Bump by hand when releasing; see
 # "Releasing" in README.md.
-VERSION=0.1.0
+VERSION=0.2.0
 
 CONF_FILE="$HOME/.config/ish-websrv.conf"
 STATE_DIR="$HOME/.local/state/ish-websrv"
-HTTPD_PID="$STATE_DIR/darkhttpd.pid"
+SERVER_PID="$STATE_DIR/server.pid"
+SERVER_MATCH=http.server # how running_pid recognises our server process
 KEEPALIVE_PID="$STATE_DIR/keepalive.pid"
 URL_FILE="$STATE_DIR/url"
 LOCATION_DEV=/dev/location
+MOUNTS_FILE=/proc/mounts
 PROFILE="$HOME/.profile"
 AUTOSTART_TAG='# ish-websrv autostart'
 
@@ -102,14 +104,45 @@ validate() {
 	if [ "$PORT" -lt 1 ] || [ "$PORT" -gt 65535 ]; then
 		die "port must be from 1 to 65535: $PORT"
 	fi
-	case $WEB_ROOT in
-		/*) ;;
-		*) die "root must be an absolute path: $WEB_ROOT" ;;
-	esac
+	reason=$(check_root "$WEB_ROOT") || die "mount point $reason: $WEB_ROOT"
 	case $KEEPALIVE in yes | no) ;; *) die "KEEPALIVE must be yes or no" ;; esac
 	case $LOG in yes | no) ;; *) die "LOG must be yes or no" ;; esac
 	[ "$ADDR" = 127.0.0.1 ] ||
 		warn "listening on $ADDR, not 127.0.0.1: other devices may be able to reach this server"
+}
+
+# check_root DIR  ->  fails with the reason on stdout if DIR can't be used as
+# the mount point. The character limit keeps the /proc/mounts comparison exact:
+# the kernel writes spaces and some other characters there as escapes like \040.
+check_root() {
+	case $1 in
+		/*) ;;
+		*) echo "must be an absolute path, e.g. /mnt/www"; return 1 ;;
+	esac
+	case $1 in
+		*[!A-Za-z0-9._/-]*) echo "may only contain letters, digits, '.', '_', '-' and '/'"; return 1 ;;
+	esac
+}
+
+# How many iOS folders are mounted on WEB_ROOT. We read /proc/mounts because
+# `mountpoint` doesn't work in iSH: an iOS mount has the same device ID as its
+# parent directory. More than 1 means mounts are stacked on top of each other.
+mount_count() {
+	[ -r "$MOUNTS_FILE" ] || die "cannot read $MOUNTS_FILE to check for the mount"
+	awk -v dir="$WEB_ROOT" '$2 == dir && $3 == "ios" { n++ } END { print n + 0 }' "$MOUNTS_FILE"
+}
+
+is_mounted() { [ "$(mount_count)" -gt 0 ]; }
+
+# Remove every stacked mount on WEB_ROOT. The cap stops an endless loop if
+# umount reports success but the mount stays listed.
+unmount_all() {
+	n=0
+	while is_mounted && [ "$n" -lt 10 ]; do
+		umount "$WEB_ROOT"
+		n=$((n + 1))
+	done
+	! is_mounted || die "could not unmount $WEB_ROOT"
 }
 
 # ask_yn "question" default  ->  prints yes or no
@@ -143,7 +176,7 @@ mount_folder() {
 	mkdir -p "$WEB_ROOT"
 	echo "Choose the folder to serve in the iOS picker..."
 	mount -t ios . "$WEB_ROOT" || die "mount failed (was the picker cancelled?)"
-	mountpoint -q "$WEB_ROOT" || die "$WEB_ROOT is still not a mount point after mounting"
+	is_mounted || die "$WEB_ROOT is not listed in $MOUNTS_FILE after mounting"
 	echo "Mounted at $WEB_ROOT"
 }
 
@@ -185,26 +218,37 @@ EOF
 }
 
 cmd_setup() {
-	if running_pid "$HTTPD_PID" darkhttpd >/dev/null; then
+	if running_pid "$SERVER_PID" "$SERVER_MATCH" >/dev/null; then
 		die "the server is running; run 'serve.sh stop' first"
 	fi
 
-	if ! command -v darkhttpd >/dev/null 2>&1; then
-		[ "$(ask_yn 'darkhttpd is not installed. Install it now with apk?' yes)" = yes ] ||
-			die "darkhttpd is required"
-		apk add darkhttpd
+	if ! command -v python3 >/dev/null 2>&1; then
+		[ "$(ask_yn 'python3 is not installed. Install it now with apk? (about 50 MB)' yes)" = yes ] ||
+			die "python3 is required"
+		apk add python3
 	fi
 
+	# Ask until we get a usable directory. Stop instead of looping if input
+	# runs out (e.g. stdin isn't a terminal).
 	if [ -z "${ROOT_SET:-}" ]; then
-		printf 'Mount point inside iSH [%s]: ' "$WEB_ROOT" >&2
-		read -r reply || reply=
-		WEB_ROOT=${reply:-$WEB_ROOT}
+		while :; do
+			printf 'Mount point inside iSH (a directory, not a command) [%s]: ' "$WEB_ROOT" >&2
+			got_input=yes
+			read -r reply || got_input=no
+			reply=${reply:-$WEB_ROOT}
+			if reason=$(check_root "$reply"); then
+				WEB_ROOT=$reply
+				break
+			fi
+			[ "$got_input" = yes ] || die "mount point $reason: $reply"
+			printf 'The mount point %s. Try again, or press Return for the default.\n' "$reason" >&2
+		done
 	fi
 	validate
 
-	if mountpoint -q "$WEB_ROOT"; then
+	if is_mounted; then
 		if [ "$(ask_yn "$WEB_ROOT is already mounted. Pick a different iOS folder?" no)" = yes ]; then
-			umount "$WEB_ROOT"
+			unmount_all
 			mount_folder
 		fi
 	else
@@ -221,36 +265,69 @@ cmd_setup() {
 	echo "Run 'serve.sh start' to start the server."
 }
 
+# Succeeds if an HTTP server answers at URL $1. Calls BusyBox's wget on
+# purpose: GNU wget (if installed) retries a dropped connection up to 20 times,
+# which made `start` hang for minutes when a non-HTTP program held the port.
+http_ok() {
+	busybox wget -q -T 2 -O /dev/null "$1" 2>/dev/null
+}
+
 cmd_start() {
 	validate
-	command -v darkhttpd >/dev/null 2>&1 ||
-		die "darkhttpd not found; run 'serve.sh setup' (or 'apk add darkhttpd')"
+	command -v python3 >/dev/null 2>&1 ||
+		die "python3 not found; run 'serve.sh setup' (or 'apk add python3')"
 
-	if pid=$(running_pid "$HTTPD_PID" darkhttpd); then
+	if pid=$(running_pid "$SERVER_PID" "$SERVER_MATCH"); then
 		echo "Already running (pid $pid) at $(cat "$URL_FILE" 2>/dev/null)"
 		return 0
 	fi
 
-	mountpoint -q "$WEB_ROOT" || mount_folder
+	is_mounted || mount_folder
 	if [ ! -r "$WEB_ROOT" ] || [ ! -x "$WEB_ROOT" ]; then
 		die "cannot read $WEB_ROOT"
 	fi
 
 	mkdir -p "$STATE_DIR"
-	rm -f "$HTTPD_PID" # stale: we just checked it isn't running
-	if [ "$KEEPALIVE" = yes ]; then start_keepalive; fi
+	rm -f "$SERVER_PID" # stale: we just checked it isn't running
 
-	set -- "$WEB_ROOT" --addr "$ADDR" --port "$PORT" --daemon --pidfile "$HTTPD_PID"
-	if [ "$LOG" = yes ]; then set -- "$@" --log "$LOG_FILE"; fi
-	darkhttpd "$@" || die "darkhttpd failed to start (is port $PORT already in use?)"
+	# If something already answers on this port, the readiness check below
+	# would get its reply and wrongly report success, so refuse up front.
+	if http_ok "http://$ADDR:$PORT/"; then
+		die "something else is already serving on port $PORT; stop it or use --port"
+	fi
 
-	# iSH is emulated and slow, so give the daemon a moment to write its pidfile.
+	# Python's http.server copies files with plain read()/write(). We don't use
+	# darkhttpd because it sends files with sendfile(), which fails in iSH for
+	# network sockets, so every file arrived empty. -u: unbuffered output, so
+	# log lines are written immediately. Python logs each request to stderr.
+	if [ "$LOG" = yes ]; then out=$LOG_FILE; else out=/dev/null; fi
+	nohup python3 -u -m http.server --bind "$ADDR" --directory "$WEB_ROOT" "$PORT" >>"$out" 2>&1 &
+	pid=$!
+	echo "$pid" >"$SERVER_PID"
+
+	# Python starts slowly under emulation. Wait until it answers a request;
+	# stop early if it has already exited (e.g. the port is in use). This uses
+	# `kill -0`, not running_pid: just after `&` the child hasn't become python
+	# yet, so its command line doesn't contain http.server. The PID can't have
+	# been reused this soon.
+	foreground="python3 -m http.server --bind $ADDR --directory $WEB_ROOT $PORT"
 	tries=0
-	until pid=$(running_pid "$HTTPD_PID" darkhttpd); do
+	until http_ok "http://$ADDR:$PORT/"; do
+		if ! kill -0 "$pid" 2>/dev/null; then
+			rm -f "$SERVER_PID"
+			die "the server exited during startup (is port $PORT in use?). To see why, run: $foreground"
+		fi
 		tries=$((tries + 1))
-		[ "$tries" -lt 5 ] || die "darkhttpd did not start; try running it in the foreground to see errors"
+		if [ "$tries" -ge 20 ]; then
+			kill "$pid"
+			rm -f "$SERVER_PID"
+			die "the server didn't answer within 20 seconds, so it was stopped. To see why, run: $foreground"
+		fi
 		sleep 1
 	done
+
+	# Only now: a failed start shouldn't leave location tracking running.
+	if [ "$KEEPALIVE" = yes ]; then start_keepalive; fi
 
 	echo "http://$ADDR:$PORT/" >"$URL_FILE"
 	echo "Serving $WEB_ROOT at http://$ADDR:$PORT/ (pid $pid)"
@@ -258,7 +335,7 @@ cmd_start() {
 }
 
 cmd_stop() {
-	stop_pid "$HTTPD_PID" darkhttpd "server"
+	stop_pid "$SERVER_PID" "$SERVER_MATCH" "server"
 	stop_pid "$KEEPALIVE_PID" "$LOCATION_DEV" "keepalive"
 	rm -f "$URL_FILE"
 }
@@ -300,13 +377,16 @@ cmd_autostart() {
 
 cmd_status() {
 	echo "version:   $VERSION"
-	if pid=$(running_pid "$HTTPD_PID" darkhttpd); then
+	if pid=$(running_pid "$SERVER_PID" "$SERVER_MATCH"); then
 		echo "server:    running (pid $pid) at $(cat "$URL_FILE" 2>/dev/null)"
 	else
 		echo "server:    stopped"
 	fi
-	if mountpoint -q "$WEB_ROOT"; then
+	count=$(mount_count)
+	if [ "$count" -eq 1 ]; then
 		echo "folder:    mounted at $WEB_ROOT"
+	elif [ "$count" -gt 1 ]; then
+		echo "folder:    mounted $count times at $WEB_ROOT (stacked; run 'serve.sh setup' and pick the folder again to clean up)"
 	else
 		echo "folder:    not mounted ($WEB_ROOT)"
 	fi
