@@ -6,6 +6,10 @@
 #   built-in defaults  ->  config file written by `setup`  ->  command-line flags
 set -eu
 
+# Semantic version (MAJOR.MINOR.PATCH). Bump by hand when releasing; see
+# "Releasing" in README.md.
+VERSION=0.1.0
+
 CONF_FILE="$HOME/.config/ish-websrv.conf"
 STATE_DIR="$HOME/.local/state/ish-websrv"
 HTTPD_PID="$STATE_DIR/darkhttpd.pid"
@@ -28,6 +32,8 @@ warn() { printf 'warning: %s\n' "$*" >&2; }
 
 usage() {
 	cat <<EOF
+serve.sh $VERSION
+
 Usage: serve.sh <command> [flags]
 
 Commands:
@@ -38,6 +44,7 @@ Commands:
   autostart on|off
            Add or remove a line in ~/.profile that runs 'start' whenever
            iSH opens (used by the iOS Shortcut; see SHORTCUTS.md)
+  version  Print the version
 
 Flags (setup saves them; start uses them for this run only):
   --root DIR       Mount point inside iSH (default: /mnt/www)
@@ -292,6 +299,7 @@ cmd_autostart() {
 }
 
 cmd_status() {
+	echo "version:   $VERSION"
 	if pid=$(running_pid "$HTTPD_PID" darkhttpd); then
 		echo "server:    running (pid $pid) at $(cat "$URL_FILE" 2>/dev/null)"
 	else
@@ -325,6 +333,7 @@ case $cmd in
 	stop)   [ $# -eq 0 ] || die "stop takes no flags"; cmd_stop ;;
 	status) [ $# -eq 0 ] || die "status takes no flags"; cmd_status ;;
 	autostart) [ $# -eq 1 ] || die "usage: serve.sh autostart on|off"; cmd_autostart "$1" ;;
+	version | --version | -V) echo "$VERSION" ;;
 	-h | --help | help) usage ;;
 	*)      usage >&2; exit 2 ;;
 esac
