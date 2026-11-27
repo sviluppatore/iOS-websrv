@@ -9,6 +9,8 @@ section when you release (see "Releasing" in the README).
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-27
+
 ### Changed
 - **The server is now Python's `http.server` instead of darkhttpd.** darkhttpd
   sends files with `sendfile()`, which fails in iSH for network sockets, so
