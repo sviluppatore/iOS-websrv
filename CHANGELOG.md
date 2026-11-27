@@ -9,6 +9,29 @@ section when you release (see "Releasing" in the README).
 
 ## [Unreleased]
 
+### Changed
+- **The server is now Python's `http.server` instead of darkhttpd.** darkhttpd
+  sends files with `sendfile()`, which fails in iSH for network sockets, so
+  every file arrived empty and Safari reported "the network connection was
+  lost". Only folder listings worked. Python copies files with ordinary reads
+  and writes. Confirmed on a device: an 11 MB file downloaded complete through
+  Python, but not through darkhttpd, whether served from the iOS folder or
+  from iSH's own disk.
+- `setup` installs `python3` (about 50 MB) instead of `darkhttpd`.
+- Access log lines now use Python's format.
+
+### Fixed
+- `start` refuses to run if something already answers on the port. Before,
+  it could report success while the other program was the one answering.
+- Location tracking (keepalive) starts only after the server is answering,
+  so a failed `start` no longer leaves it running.
+
+### Upgrading
+- Run `./serve.sh stop` with the old version **before** updating. The new
+  version doesn't know about darkhttpd's PID file, so it can't stop an old
+  darkhttpd that's still running.
+- Afterwards you can remove darkhttpd: `apk del darkhttpd`.
+
 ## [0.1.1] - 2026-11-27
 
 First fixes from testing on a device (iSH with BusyBox 1.33.1, darkhttpd 1.13).

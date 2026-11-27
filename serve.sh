@@ -1,6 +1,6 @@
 #!/bin/sh
 # serve.sh - serve a folder from the iOS Files app inside iSH, read-only,
-# reachable only from this device (127.0.0.1), using darkhttpd.
+# reachable only from this device (127.0.0.1), using Python's http.server.
 #
 # Settings are resolved in this order (later wins):
 #   built-in defaults  ->  config file written by `setup`  ->  command-line flags
@@ -12,7 +12,8 @@ VERSION=0.1.1
 
 CONF_FILE="$HOME/.config/ish-websrv.conf"
 STATE_DIR="$HOME/.local/state/ish-websrv"
-HTTPD_PID="$STATE_DIR/darkhttpd.pid"
+SERVER_PID="$STATE_DIR/server.pid"
+SERVER_MATCH=http.server # how running_pid recognises our server process
 KEEPALIVE_PID="$STATE_DIR/keepalive.pid"
 URL_FILE="$STATE_DIR/url"
 LOCATION_DEV=/dev/location
@@ -217,14 +218,14 @@ EOF
 }
 
 cmd_setup() {
-	if running_pid "$HTTPD_PID" darkhttpd >/dev/null; then
+	if running_pid "$SERVER_PID" "$SERVER_MATCH" >/dev/null; then
 		die "the server is running; run 'serve.sh stop' first"
 	fi
 
-	if ! command -v darkhttpd >/dev/null 2>&1; then
-		[ "$(ask_yn 'darkhttpd is not installed. Install it now with apk?' yes)" = yes ] ||
-			die "darkhttpd is required"
-		apk add darkhttpd
+	if ! command -v python3 >/dev/null 2>&1; then
+		[ "$(ask_yn 'python3 is not installed. Install it now with apk? (about 50 MB)' yes)" = yes ] ||
+			die "python3 is required"
+		apk add python3
 	fi
 
 	# Ask until we get a usable directory. Stop instead of looping if input
@@ -264,12 +265,19 @@ cmd_setup() {
 	echo "Run 'serve.sh start' to start the server."
 }
 
+# Succeeds if an HTTP server answers at URL $1. Calls BusyBox's wget on
+# purpose: GNU wget (if installed) retries a dropped connection up to 20 times,
+# which made `start` hang for minutes when a non-HTTP program held the port.
+http_ok() {
+	busybox wget -q -T 2 -O /dev/null "$1" 2>/dev/null
+}
+
 cmd_start() {
 	validate
-	command -v darkhttpd >/dev/null 2>&1 ||
-		die "darkhttpd not found; run 'serve.sh setup' (or 'apk add darkhttpd')"
+	command -v python3 >/dev/null 2>&1 ||
+		die "python3 not found; run 'serve.sh setup' (or 'apk add python3')"
 
-	if pid=$(running_pid "$HTTPD_PID" darkhttpd); then
+	if pid=$(running_pid "$SERVER_PID" "$SERVER_MATCH"); then
 		echo "Already running (pid $pid) at $(cat "$URL_FILE" 2>/dev/null)"
 		return 0
 	fi
@@ -280,20 +288,46 @@ cmd_start() {
 	fi
 
 	mkdir -p "$STATE_DIR"
-	rm -f "$HTTPD_PID" # stale: we just checked it isn't running
-	if [ "$KEEPALIVE" = yes ]; then start_keepalive; fi
+	rm -f "$SERVER_PID" # stale: we just checked it isn't running
 
-	set -- "$WEB_ROOT" --addr "$ADDR" --port "$PORT" --daemon --pidfile "$HTTPD_PID"
-	if [ "$LOG" = yes ]; then set -- "$@" --log "$LOG_FILE"; fi
-	darkhttpd "$@" || die "darkhttpd failed to start (is port $PORT already in use?)"
+	# If something already answers on this port, the readiness check below
+	# would get its reply and wrongly report success, so refuse up front.
+	if http_ok "http://$ADDR:$PORT/"; then
+		die "something else is already serving on port $PORT; stop it or use --port"
+	fi
 
-	# iSH is emulated and slow, so give the daemon a moment to write its pidfile.
+	# Python's http.server copies files with plain read()/write(). We don't use
+	# darkhttpd because it sends files with sendfile(), which fails in iSH for
+	# network sockets, so every file arrived empty. -u: unbuffered output, so
+	# log lines are written immediately. Python logs each request to stderr.
+	if [ "$LOG" = yes ]; then out=$LOG_FILE; else out=/dev/null; fi
+	nohup python3 -u -m http.server --bind "$ADDR" --directory "$WEB_ROOT" "$PORT" >>"$out" 2>&1 &
+	pid=$!
+	echo "$pid" >"$SERVER_PID"
+
+	# Python starts slowly under emulation. Wait until it answers a request;
+	# stop early if it has already exited (e.g. the port is in use). This uses
+	# `kill -0`, not running_pid: just after `&` the child hasn't become python
+	# yet, so its command line doesn't contain http.server. The PID can't have
+	# been reused this soon.
+	foreground="python3 -m http.server --bind $ADDR --directory $WEB_ROOT $PORT"
 	tries=0
-	until pid=$(running_pid "$HTTPD_PID" darkhttpd); do
+	until http_ok "http://$ADDR:$PORT/"; do
+		if ! kill -0 "$pid" 2>/dev/null; then
+			rm -f "$SERVER_PID"
+			die "the server exited during startup (is port $PORT in use?). To see why, run: $foreground"
+		fi
 		tries=$((tries + 1))
-		[ "$tries" -lt 5 ] || die "darkhttpd did not start; try running it in the foreground to see errors"
+		if [ "$tries" -ge 20 ]; then
+			kill "$pid"
+			rm -f "$SERVER_PID"
+			die "the server didn't answer within 20 seconds, so it was stopped. To see why, run: $foreground"
+		fi
 		sleep 1
 	done
+
+	# Only now: a failed start shouldn't leave location tracking running.
+	if [ "$KEEPALIVE" = yes ]; then start_keepalive; fi
 
 	echo "http://$ADDR:$PORT/" >"$URL_FILE"
 	echo "Serving $WEB_ROOT at http://$ADDR:$PORT/ (pid $pid)"
@@ -301,7 +335,7 @@ cmd_start() {
 }
 
 cmd_stop() {
-	stop_pid "$HTTPD_PID" darkhttpd "server"
+	stop_pid "$SERVER_PID" "$SERVER_MATCH" "server"
 	stop_pid "$KEEPALIVE_PID" "$LOCATION_DEV" "keepalive"
 	rm -f "$URL_FILE"
 }
@@ -343,7 +377,7 @@ cmd_autostart() {
 
 cmd_status() {
 	echo "version:   $VERSION"
-	if pid=$(running_pid "$HTTPD_PID" darkhttpd); then
+	if pid=$(running_pid "$SERVER_PID" "$SERVER_MATCH"); then
 		echo "server:    running (pid $pid) at $(cat "$URL_FILE" 2>/dev/null)"
 	else
 		echo "server:    stopped"
