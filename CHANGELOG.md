@@ -9,6 +9,10 @@ section when you release (see "Releasing" in the README).
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-11-27
+
+First fixes from testing on a device (iSH with BusyBox 1.33.1, darkhttpd 1.13).
+
 ### Fixed
 - `setup` and `start` failed with "still not a mount point" even though the
   iOS folder was mounted. BusyBox `mountpoint` can't see iSH's iOS mounts (they

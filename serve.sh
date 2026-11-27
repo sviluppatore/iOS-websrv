@@ -8,7 +8,7 @@ set -eu
 
 # Semantic version (MAJOR.MINOR.PATCH). Bump by hand when releasing; see
 # "Releasing" in README.md.
-VERSION=0.1.0
+VERSION=0.1.1
 
 CONF_FILE="$HOME/.config/ish-websrv.conf"
 STATE_DIR="$HOME/.local/state/ish-websrv"
