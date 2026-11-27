@@ -17,6 +17,9 @@ section when you release (see "Releasing" in the README).
 - Every failed `start` opened the picker and mounted the folder again on top of
   the previous mount. Picking the folder again in `setup` now removes all
   stacked mounts, and `status` reports when there's more than one.
+- Typing something that isn't a valid directory at setup's mount point prompt
+  (e.g. `./serve.sh start`) ended setup without saving anything. It now
+  explains why and asks again.
 
 ### Changed
 - The mount point may only contain letters, digits, `.`, `_`, `-` and `/`,

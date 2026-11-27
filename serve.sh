@@ -227,10 +227,21 @@ cmd_setup() {
 		apk add darkhttpd
 	fi
 
+	# Ask until we get a usable directory. Stop instead of looping if input
+	# runs out (e.g. stdin isn't a terminal).
 	if [ -z "${ROOT_SET:-}" ]; then
-		printf 'Mount point inside iSH [%s]: ' "$WEB_ROOT" >&2
-		read -r reply || reply=
-		WEB_ROOT=${reply:-$WEB_ROOT}
+		while :; do
+			printf 'Mount point inside iSH (a directory, not a command) [%s]: ' "$WEB_ROOT" >&2
+			got_input=yes
+			read -r reply || got_input=no
+			reply=${reply:-$WEB_ROOT}
+			if reason=$(check_root "$reply"); then
+				WEB_ROOT=$reply
+				break
+			fi
+			[ "$got_input" = yes ] || die "mount point $reason: $reply"
+			printf 'The mount point %s. Try again, or press Return for the default.\n' "$reason" >&2
+		done
 	fi
 	validate
 
