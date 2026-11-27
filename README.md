@@ -31,7 +31,14 @@ Then open <http://127.0.0.1:8080/> in Safari.
 | `setup`  | Installs darkhttpd if missing, mounts the iOS folder you pick, asks about keepalive and logging, and saves your answers. Run it again to pick a different folder. |
 | `start`  | Starts the server. If the folder isn't mounted (e.g. after iSH restarted), it opens the folder picker first. |
 | `stop`   | Stops the server and the keepalive. Leaves the folder mounted. |
-| `status` | Shows the server, mount and keepalive state. |
+| `status` | Shows the server, mount, keepalive and autostart state. |
+| `autostart on\|off` | Adds or removes a line in `~/.profile` that runs `start` whenever iSH opens. |
+
+## Starting from iOS Shortcuts / Siri
+
+See [SHORTCUTS.md](SHORTCUTS.md). In short: `./serve.sh autostart on`, then
+make a Shortcut that opens iSH, waits a few seconds, and opens the URL in
+Safari. An optional SSH-based setup adds stop/status Shortcuts.
 
 ## Flags
 

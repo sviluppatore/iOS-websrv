@@ -12,6 +12,8 @@ HTTPD_PID="$STATE_DIR/darkhttpd.pid"
 KEEPALIVE_PID="$STATE_DIR/keepalive.pid"
 URL_FILE="$STATE_DIR/url"
 LOCATION_DEV=/dev/location
+PROFILE="$HOME/.profile"
+AUTOSTART_TAG='# ish-websrv autostart'
 
 # Defaults
 WEB_ROOT=/mnt/www
@@ -33,6 +35,9 @@ Commands:
   start    Start the server (mounts the folder first if needed)
   stop     Stop the server and the background keepalive
   status   Show what is running
+  autostart on|off
+           Add or remove a line in ~/.profile that runs 'start' whenever
+           iSH opens (used by the iOS Shortcut; see SHORTCUTS.md)
 
 Flags (setup saves them; start uses them for this run only):
   --root DIR       Mount point inside iSH (default: /mnt/www)
@@ -251,6 +256,41 @@ cmd_stop() {
 	rm -f "$URL_FILE"
 }
 
+# Absolute path to this script, so the .profile line works from any directory.
+script_path() (
+	cd "$(dirname "$0")" && printf '%s/%s\n' "$(pwd)" "$(basename "$0")"
+)
+
+# Rewrite ~/.profile without our tagged line. `cat >` (not mv) keeps the
+# file's permissions and any symlink intact.
+remove_autostart_line() {
+	[ -f "$PROFILE" ] || return 0
+	grep -vF "$AUTOSTART_TAG" "$PROFILE" >"$PROFILE.tmp" || [ $? -eq 1 ]
+	cat "$PROFILE.tmp" >"$PROFILE"
+	rm -f "$PROFILE.tmp"
+}
+
+cmd_autostart() {
+	case ${1:-} in
+		on)
+			path=$(script_path)
+			case $path in
+				*[\"\$\`\\]*) die "script path has characters unsafe for .profile: $path" ;;
+			esac
+			remove_autostart_line # avoid duplicates; refreshes the path if the repo moved
+			printf '"%s" start %s\n' "$path" "$AUTOSTART_TAG" >>"$PROFILE"
+			echo "Autostart on: iSH will run '$path start' when it opens."
+			[ "$KEEPALIVE" = yes ] ||
+				warn "keepalive is off, so the server stops answering once you leave iSH (run 'serve.sh setup' to change)"
+			;;
+		off)
+			remove_autostart_line
+			echo "Autostart off."
+			;;
+		*) die "usage: serve.sh autostart on|off" ;;
+	esac
+}
+
 cmd_status() {
 	if pid=$(running_pid "$HTTPD_PID" darkhttpd); then
 		echo "server:    running (pid $pid) at $(cat "$URL_FILE" 2>/dev/null)"
@@ -267,6 +307,11 @@ cmd_status() {
 	else
 		echo "keepalive: stopped"
 	fi
+	if grep -qsF "$AUTOSTART_TAG" "$PROFILE"; then
+		echo "autostart: on (~/.profile)"
+	else
+		echo "autostart: off"
+	fi
 	echo "saved settings: port=$PORT keepalive=$KEEPALIVE log=$LOG"
 }
 
@@ -279,6 +324,7 @@ case $cmd in
 	start)  parse_flags "$@"; cmd_start ;;
 	stop)   [ $# -eq 0 ] || die "stop takes no flags"; cmd_stop ;;
 	status) [ $# -eq 0 ] || die "status takes no flags"; cmd_status ;;
+	autostart) [ $# -eq 1 ] || die "usage: serve.sh autostart on|off"; cmd_autostart "$1" ;;
 	-h | --help | help) usage ;;
 	*)      usage >&2; exit 2 ;;
 esac
