@@ -9,6 +9,19 @@ section when you release (see "Releasing" in the README).
 
 ## [Unreleased]
 
+### Fixed
+- `setup` and `start` failed with "still not a mount point" even though the
+  iOS folder was mounted. BusyBox `mountpoint` can't see iSH's iOS mounts (they
+  have the same device ID as their parent directory), so the script now checks
+  `/proc/mounts` for a mount of type `ios`.
+- Every failed `start` opened the picker and mounted the folder again on top of
+  the previous mount. Picking the folder again in `setup` now removes all
+  stacked mounts, and `status` reports when there's more than one.
+
+### Changed
+- The mount point may only contain letters, digits, `.`, `_`, `-` and `/`,
+  so it can be matched exactly in `/proc/mounts`.
+
 ## [0.1.0] - 2026-11-27
 
 First version. Tested with stand-ins for darkhttpd and iSH; not yet tested on

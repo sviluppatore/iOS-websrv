@@ -16,6 +16,7 @@ HTTPD_PID="$STATE_DIR/darkhttpd.pid"
 KEEPALIVE_PID="$STATE_DIR/keepalive.pid"
 URL_FILE="$STATE_DIR/url"
 LOCATION_DEV=/dev/location
+MOUNTS_FILE=/proc/mounts
 PROFILE="$HOME/.profile"
 AUTOSTART_TAG='# ish-websrv autostart'
 
@@ -102,14 +103,45 @@ validate() {
 	if [ "$PORT" -lt 1 ] || [ "$PORT" -gt 65535 ]; then
 		die "port must be from 1 to 65535: $PORT"
 	fi
-	case $WEB_ROOT in
-		/*) ;;
-		*) die "root must be an absolute path: $WEB_ROOT" ;;
-	esac
+	reason=$(check_root "$WEB_ROOT") || die "mount point $reason: $WEB_ROOT"
 	case $KEEPALIVE in yes | no) ;; *) die "KEEPALIVE must be yes or no" ;; esac
 	case $LOG in yes | no) ;; *) die "LOG must be yes or no" ;; esac
 	[ "$ADDR" = 127.0.0.1 ] ||
 		warn "listening on $ADDR, not 127.0.0.1: other devices may be able to reach this server"
+}
+
+# check_root DIR  ->  fails with the reason on stdout if DIR can't be used as
+# the mount point. The character limit keeps the /proc/mounts comparison exact:
+# the kernel writes spaces and some other characters there as escapes like \040.
+check_root() {
+	case $1 in
+		/*) ;;
+		*) echo "must be an absolute path, e.g. /mnt/www"; return 1 ;;
+	esac
+	case $1 in
+		*[!A-Za-z0-9._/-]*) echo "may only contain letters, digits, '.', '_', '-' and '/'"; return 1 ;;
+	esac
+}
+
+# How many iOS folders are mounted on WEB_ROOT. We read /proc/mounts because
+# `mountpoint` doesn't work in iSH: an iOS mount has the same device ID as its
+# parent directory. More than 1 means mounts are stacked on top of each other.
+mount_count() {
+	[ -r "$MOUNTS_FILE" ] || die "cannot read $MOUNTS_FILE to check for the mount"
+	awk -v dir="$WEB_ROOT" '$2 == dir && $3 == "ios" { n++ } END { print n + 0 }' "$MOUNTS_FILE"
+}
+
+is_mounted() { [ "$(mount_count)" -gt 0 ]; }
+
+# Remove every stacked mount on WEB_ROOT. The cap stops an endless loop if
+# umount reports success but the mount stays listed.
+unmount_all() {
+	n=0
+	while is_mounted && [ "$n" -lt 10 ]; do
+		umount "$WEB_ROOT"
+		n=$((n + 1))
+	done
+	! is_mounted || die "could not unmount $WEB_ROOT"
 }
 
 # ask_yn "question" default  ->  prints yes or no
@@ -143,7 +175,7 @@ mount_folder() {
 	mkdir -p "$WEB_ROOT"
 	echo "Choose the folder to serve in the iOS picker..."
 	mount -t ios . "$WEB_ROOT" || die "mount failed (was the picker cancelled?)"
-	mountpoint -q "$WEB_ROOT" || die "$WEB_ROOT is still not a mount point after mounting"
+	is_mounted || die "$WEB_ROOT is not listed in $MOUNTS_FILE after mounting"
 	echo "Mounted at $WEB_ROOT"
 }
 
@@ -202,9 +234,9 @@ cmd_setup() {
 	fi
 	validate
 
-	if mountpoint -q "$WEB_ROOT"; then
+	if is_mounted; then
 		if [ "$(ask_yn "$WEB_ROOT is already mounted. Pick a different iOS folder?" no)" = yes ]; then
-			umount "$WEB_ROOT"
+			unmount_all
 			mount_folder
 		fi
 	else
@@ -231,7 +263,7 @@ cmd_start() {
 		return 0
 	fi
 
-	mountpoint -q "$WEB_ROOT" || mount_folder
+	is_mounted || mount_folder
 	if [ ! -r "$WEB_ROOT" ] || [ ! -x "$WEB_ROOT" ]; then
 		die "cannot read $WEB_ROOT"
 	fi
@@ -305,8 +337,11 @@ cmd_status() {
 	else
 		echo "server:    stopped"
 	fi
-	if mountpoint -q "$WEB_ROOT"; then
+	count=$(mount_count)
+	if [ "$count" -eq 1 ]; then
 		echo "folder:    mounted at $WEB_ROOT"
+	elif [ "$count" -gt 1 ]; then
+		echo "folder:    mounted $count times at $WEB_ROOT (stacked; run 'serve.sh setup' and pick the folder again to clean up)"
 	else
 		echo "folder:    not mounted ($WEB_ROOT)"
 	fi
