@@ -87,3 +87,30 @@ Examples:
 - **Listing is empty:** run `ls /mnt/www`. If that's empty too, the mount
   didn't take. Re-run `./serve.sh setup` and choose "y" to pick the folder
   again.
+
+## Versioning and releasing
+
+The version is in `VERSION=` near the top of `serve.sh` and follows
+[Semantic Versioning](https://semver.org): bump **PATCH** for fixes,
+**MINOR** for new features that don't change how existing commands behave,
+and **MAJOR** for changes that do (e.g. renamed flags or a config format
+change). While the version starts with `0.`, expect things to change.
+
+Check the installed version with `./serve.sh --version`; it's also the first
+line of `./serve.sh status`.
+
+To release, by hand:
+
+1. Change `VERSION=` in `serve.sh`.
+2. In `CHANGELOG.md`, rename `## [Unreleased]` to `## [X.Y.Z] - YYYY-MM-DD`
+   and add a new empty `## [Unreleased]` above it.
+3. Commit, then tag the commit and push the tag:
+
+   ```sh
+   git commit -am "Release vX.Y.Z"
+   git tag -a vX.Y.Z -m "vX.Y.Z"
+   git push origin vX.Y.Z
+   ```
+
+Tag the commit on the main branch after merging. A tag on a feature branch
+points at the wrong commit if the branch is later squash-merged or rebased.
